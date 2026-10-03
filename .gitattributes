@@ -1,0 +1,4 @@
+# Launchers and shell scripts must keep LF endings so macOS can run them.
+run_app.command text eol=lf
+*.sh text eol=lf
+*.bat text eol=crlf

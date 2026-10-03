@@ -1,4 +1,4 @@
-# Standalone Signal theme copy with a local Reach registration; no Hub files are changed.
+# Synced from signal-hub/signal-theme/signal_theme.py. Edit it there, then run scripts/sync_theme.py.
 """Shared look for every *Signal app. One import replaces the pasted <style> block.
 
     import signal_theme as sig
@@ -54,8 +54,6 @@ FAMILIES = {
 
 # key: (prefix, family, repo, tagline). Generated from signal-hub/apps.yaml by scripts/sync_suite.py.
 APPS = {
-    "reach": ("Reach", "market", "location-catchment-analysis", "Where could your next location reach?"),
-    "rival":      ("Rival", "market", "competitor-analysis", "Which rivals matter, and how could they respond?"),
     "track":      ("Track", "brand", "brand-tracking", "Is the brand moving, or is the tracker just noisy?"),
     "position":   ("Position", "brand", "brand-positioning", "See where brands stand"),
     "prospect":   ("Prospect", "market", "b2b-prospecting", "Norwegian B2B prospecting from open Brønnøysund data"),
@@ -63,15 +61,19 @@ APPS = {
     "influence":  ("Influence", "market", "influencer-campaigns", "Which creators delivered, and was every post labelled properly?"),
     "season":     ("Season", "market", "marketing-calendar", "The Norwegian marketing year, worked backwards"),
     "adopt":      ("Adopt", "market", "adoption-forecasting", "Know when the market will follow"),
+    "rival":      ("Rival", "market", "competitor-analysis", "Competitor evidence. Better response questions."),
+    "reach":      ("Reach", "market", "location-catchment-analysis", "Where could your next location reach?"),
     "worth":      ("Worth", "customer", "customer-value-analytics", "Find the customers, value, and moves that matter"),
     "segment":    ("Segment", "customer", "customer-segmentation", "Find the groups worth understanding"),
     "trace":      ("Trace", "customer", "journey-path-analysis", "Where do journeys flow, stall, and end?"),
+    "blueprint":  ("Blueprint", "customer", "service-blueprinting", "Make the service behind the experience visible."),
     "recommend":  ("Recommend", "customer", "recommender-evaluation", "Compare recommendation policies before the live test"),
     "choice":     ("Choice", "research", "conjoint-analysis", "Know what customers actually value"),
     "driver":     ("Driver", "research", "survey-driver-analysis", "See what moves with satisfaction and what to test next"),
     "measure":    ("Measure", "research", "measurement-validation", "Is this score measuring what you think it is?"),
     "text":       ("Text", "research", "open-text-analysis", "What are people actually saying, and does the pattern hold?"),
     "tag":        ("Tag", "research", "pricing-analysis", "What price range is supported, and how does profit move?"),
+    "learn":      ("Learn", "research", "research-prioritization", "Which uncertainty is worth researching?"),
     "experiment": ("Experiment", "decide", "experiment-analysis", "Did the treatment cause a change worth acting on?"),
     "gate":       ("Gate", "decide", "launch-decision-gate", "Know when the evidence deserves the next investment"),
     "shift":      ("Shift", "decide", "cannibalization-analysis", "New demand, or demand moved around?"),
