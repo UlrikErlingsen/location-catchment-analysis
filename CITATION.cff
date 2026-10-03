@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using this metadata. The Reach Signal name is informally screened, not legally cleared."
+title: "Reach Signal: Where could your next location reach?"
+type: software
+authors:
+  - family-names: Erlingsen
+    given-names: Ulrik
+version: 1.0.0
+date-released: 2026-10-03
+license: AGPL-3.0-or-later
+repository-code: "https://github.com/UlrikErlingsen/location-catchment-analysis"
+abstract: "Compare candidate sites with a Huff choice model on distance or travel time, with customer areas, competitors and every assumption in view."
