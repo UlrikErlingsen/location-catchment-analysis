@@ -2,6 +2,19 @@
 
 All notable changes to Reach Signal are documented here.
 
+## [1.1.0] - 2026-10-03
+
+### Changed
+
+- **No data limits on your own computer.** Standalone, in a local Signal Hub or on a company server, Reach Signal no longer caps upload size, rows, cells, customer areas, locations, travel-time pairs or areas × locations; memory is the limit. The 1.0 caps are gone.
+- **Public demo caps.** With `SIGNAL_PUBLIC=1` the app applies hard caps for a shared server (50 MB uploads, 200,000 rows per sheet, 2 million cells, 50,000 areas, 100 locations, 200,000 travel-time pairs, 2 million areas × locations, 50 MB JSON, 2 million pasted characters), all defined in `reachsignal/limits.py`. Capped messages say it is a demo limit.
+- Upload cap raised to 10,000 MB in `.streamlit/config.toml`, the launchers (`REACHSIGNAL_MAX_UPLOAD_MB`) and the Dockerfile.
+
+### Added
+
+- Running out of memory is reported as a plain message instead of an error trace.
+- The Evidence ZIP holds the full area × location allocation table, written block by block. Excel tables longer than one sheet continue on "(cont. N)" sheets, and the importer joins them again.
+
 ## [1.0.0] - 2026-10-03
 
 First public release.
