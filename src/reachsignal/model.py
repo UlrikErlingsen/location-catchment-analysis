@@ -8,13 +8,10 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
-from reachsignal import portable as io
+from reachsignal import limits, portable as io
 
-MAX_AREAS = 500_000          # customer areas (fits one Excel sheet for the round trip)
-MAX_SITES = 500              # own, competitor and candidate locations together
-MAX_DISTANCES = 1_000_000    # travel-time pairs (one Excel sheet holds 1,048,575 data rows)
-MAX_PAIRS = 25_000_000       # areas × locations evaluated by the model
-DETAIL_LIMIT = 100_000       # rows in the pair-level allocation table
+# No data limits outside a public demo; demo caps live in reachsignal.limits. The values below shorten displays only.
+DETAIL_LIMIT = 100_000       # rows of the pair-level allocation table shown in the app and the Excel export
 REPORT_ROWS = 200            # rows per table in the printable brief
 CHUNK_CELLS = 1_000_000      # area × location cells per computation block (8 MB per float array)
 ROW_TABLES = ("areas", "sites", "distances")
@@ -32,8 +29,8 @@ PARAMS = io.obj({"distance_mode":{"enum":["straight_km","travel_minutes"]},"alph
                  "distance_floor":io.number(1e-6,10000),"access_threshold":io.number(1e-6,10000)})
 SCHEMA = io.obj({"schema_version":{"const":"1.0"},"brief":io.text(2500),
                  "context":io.array(io.obj({"demand_unit":io.text(150),"period":io.text(150),"attractiveness_definition":io.text(800)}),1,1),
-                 "parameters":io.array(PARAMS,1,1),"areas":io.array(AREA,MAX_AREAS,1),"sites":io.array(SITE,MAX_SITES,1),
-                 "distances":io.array(DISTANCE,MAX_DISTANCES),"sources":io.array(io.SOURCE,100)})
+                 "parameters":io.array(PARAMS,1,1),"areas":io.array(AREA,None,1),"sites":io.array(SITE,None,1),
+                 "distances":io.array(DISTANCE,None),"sources":io.array(io.SOURCE,100)})
 TITLES = {"context":"Demand unit, period and common definition of attractiveness", "parameters":"Model settings · distances use km or supplied travel minutes",
           "areas":"Customer areas · demand and outside-option weight", "sites":"Existing locations and candidate alternatives",
           "distances":"Optional road/transit travel matrix · minutes from each area to each site", "sources":"Sources or input justifications"}
@@ -66,6 +63,7 @@ REVIEW_GUIDANCE = "Check the location coordinates, area boundaries, demand unit,
 
 
 
+LIMIT_NAMES = {"areas": "areas", "sites": "sites", "distances": "distances"}
 SHELL = {**SCHEMA, "properties": {**SCHEMA["properties"], **{name: {"type": "array"} for name in ROW_TABLES}}}
 
 
@@ -80,8 +78,8 @@ def validate(data):
         rows = data[name]
         if len(rows) < spec.get("minItems", 0):
             raise io.DataProblem(f"{name}: include at least {spec['minItems']} row.")
-        if len(rows) > spec["maxItems"]:
-            raise io.DataProblem(f"{name}: at most {spec['maxItems']:,} rows are supported; this case has {len(rows):,}. {SIZE_ADVICE}")
+        if limits.over(LIMIT_NAMES[name], len(rows)):
+            raise io.DataProblem(limits.demo_limit(f"{name}: at most {limits.cap(LIMIT_NAMES[name]):,} rows; this case has {len(rows):,}. {SIZE_ADVICE}"))
         d[name] = io.validate_rows(rows, spec["items"], name)
     areas,sites,sources=[io.unique(d[k]) for k in ["areas","sites","sources"]]
     if "OUTSIDE" in sites:
@@ -89,9 +87,9 @@ def validate(data):
     if not any(s["role"]!="candidate" for s in d["sites"]):
         raise io.DataProblem("Include at least one existing own or competitor location for the baseline.")
     pairs = len(d["areas"]) * len(d["sites"])
-    if pairs > MAX_PAIRS:
-        raise io.DataProblem(f"The model compares every customer area with every location: {len(d['areas']):,} areas × "
-                             f"{len(d['sites']):,} locations = {pairs:,} pairs, above the {MAX_PAIRS:,} supported. {SIZE_ADVICE}")
+    if limits.over("pairs", pairs):
+        raise io.DataProblem(limits.demo_limit(f"The model compares every customer area with every location: {len(d['areas']):,} areas × "
+                             f"{len(d['sites']):,} locations = {pairs:,} pairs, above {limits.cap('pairs'):,}. {SIZE_ADVICE}"))
     for row in d["areas"]+d["sites"]:
         if (row["latitude"] is None)!=(row["longitude"] is None):
             raise io.DataProblem("Supply both coordinates, or leave both null.")
@@ -246,31 +244,22 @@ def _prepare(d):
                            role=np.array([s["role"] for s in sites]), geo=_Geometry(d))
 
 
-def allocate(d,candidate=None):
+def _scenario(d,candidate=None):
     d=validate(d)
     _require_complete(d, candidate)
     sites=active_sites(d,candidate)
-    areas=d["areas"]
     P=_prepare(d)
-    p=P.p
-    n,m=P.n,len(sites)
     cols=[j for j,s in enumerate(d["sites"]) if s["role"]!="candidate" or s["id"]==candidate]
     own=np.isin(P.role[cols],["own","candidate"])
+    return d,sites,P,cols,own
+
+
+def _scenario_blocks(P,cols):
+    """Yield (start, stop, raw distances, scaled Huff weights, scaled outside weight, denominator) per block."""
+    p=P.p
     loga=p["alpha"]*np.log(P.attract[cols])
-    own_share,outside_share,nearest,nearest_own=(np.empty(n) for _ in range(4))
-    site_alloc=np.zeros(m)
-    outside_alloc=0.0
-    floored=0
-    shown=n if n*(m+1)<=DETAIL_LIMIT else max(1,DETAIL_LIMIT//(m+1))
-    detail_dist,detail_prob=[],[]
-    for start,stop in _blocks(n,m):
+    for start,stop in _blocks(P.n,len(cols)):
         dist=P.geo.block(start,stop,cols)
-        floored+=int((dist<p["distance_floor"]).sum())
-        nearest[start:stop]=dist.min(axis=1)
-        if own.any():
-            nearest_own[start:stop]=dist[:,own].min(axis=1)
-        if start<shown:
-            detail_dist.append(dist[:shown-start].copy())
         w=np.maximum(dist,p["distance_floor"])
         np.log(w,out=w)
         w*=-p["beta"]
@@ -280,14 +269,47 @@ def allocate(d,candidate=None):
         w-=top[:,None]
         np.exp(w,out=w)
         so=np.exp(lo-top)
-        denom=w.sum(axis=1)+so
+        yield start,stop,dist,w,so,w.sum(axis=1)+so
+
+
+def _pair_frame(ids,site_ids,raw,prob,outside_share,demand,floor):
+    """Area-major rows: each area's locations, then its OUTSIDE row."""
+    k,m=raw.shape
+    blank=np.full((k,1),np.nan)
+    share=np.hstack([prob,outside_share[:,None]])
+    return pd.DataFrame({"area_id":np.repeat(np.asarray(ids,dtype=object),m+1),
+                         "site_id":np.tile(np.append(np.asarray(site_ids,dtype=object),"OUTSIDE"),k),
+                         "distance":np.hstack([raw,blank]).ravel(),
+                         "distance_used":np.hstack([np.maximum(raw,floor),blank]).ravel(),
+                         "choice_share":share.ravel(),
+                         "allocated_demand":(share*demand[:,None]).ravel()})
+
+
+def allocate(d,candidate=None):
+    d,sites,P,cols,own=_scenario(d,candidate)
+    areas=d["areas"]
+    p=P.p
+    n,m=P.n,len(sites)
+    own_share,outside_share,nearest,nearest_own=(np.empty(n) for _ in range(4))
+    site_alloc=np.zeros(m)
+    outside_alloc=0.0
+    floored=0
+    shown=n if n*(m+1)<=DETAIL_LIMIT else max(1,DETAIL_LIMIT//(m+1))
+    detail=[]
+    for start,stop,dist,w,so,denom in _scenario_blocks(P,cols):
+        floored+=int((dist<p["distance_floor"]).sum())
+        nearest[start:stop]=dist.min(axis=1)
+        if own.any():
+            nearest_own[start:stop]=dist[:,own].min(axis=1)
         own_share[start:stop]=w[:,own].sum(axis=1)/denom
         outside_share[start:stop]=so/denom
         scale=P.demand[start:stop]/denom
         site_alloc+=scale@w
         outside_alloc+=float(scale@so)
         if start<shown:
-            detail_prob.append(w[:shown-start]/denom[:shown-start,None])
+            k=min(stop,shown)-start
+            detail.append(_pair_frame([a["id"] for a in areas[start:start+k]],[s["id"] for s in sites],dist[:k],
+                                      w[:k]/denom[:k,None],outside_share[start:start+k],P.demand[start:start+k],p["distance_floor"]))
     threshold=p["access_threshold"]
     frame=pd.DataFrame({"area_id":[a["id"] for a in areas],"area":[a["name"] for a in areas],"demand":P.demand,
                         "own_share":own_share,"outside_share":outside_share,"nearest_any":nearest,
@@ -296,20 +318,19 @@ def allocate(d,candidate=None):
                         "beyond_own_threshold":nearest_own>threshold if own.any() else np.ones(n,dtype=bool)})
     site_rows=[{"site_id":s["id"],"site":s["name"],"role":s["role"],"allocated_demand":float(site_alloc[j])} for j,s in enumerate(sites)]
     site_rows.append({"site_id":"OUTSIDE","site":"Outside listed sites / no visit","role":"outside","allocated_demand":outside_alloc})
-    raw=np.concatenate(detail_dist)
-    prob=np.concatenate(detail_prob)
-    ids=np.array([a["id"] for a in areas[:shown]],dtype=object)
-    blank=np.full(shown,np.nan)
-    detail=pd.DataFrame({"area_id":np.concatenate([np.repeat(ids,m),ids]),
-                         "site_id":np.concatenate([np.tile(np.array([s["id"] for s in sites],dtype=object),shown),np.full(shown,"OUTSIDE",dtype=object)]),
-                         "distance":np.concatenate([raw.ravel(),blank]),
-                         "distance_used":np.concatenate([np.maximum(raw,p["distance_floor"]).ravel(),blank]),
-                         "choice_share":np.concatenate([prob.ravel(),outside_share[:shown]]),
-                         "allocated_demand":np.concatenate([(prob*P.demand[:shown,None]).ravel(),outside_share[:shown]*P.demand[:shown]])})
-    return {"areas":frame,"sites":pd.DataFrame(site_rows),"allocation":detail,
+    return {"areas":frame,"sites":pd.DataFrame(site_rows),"allocation":pd.concat(detail,ignore_index=True),
             "own_demand":float(site_alloc[own].sum()),"outside_demand":outside_alloc,
             "total_demand":float(P.demand.sum()),"beyond_access_demand":float(P.demand[nearest>threshold].sum()),
             "floored_pairs":floored,"allocation_areas":shown,"area_count":n}
+
+
+def allocation_blocks(d,candidate=None):
+    """Every area × location row of a scenario (the full pair-level table), one block of areas at a time."""
+    d,sites,P,cols,_=_scenario(d,candidate)
+    ids=[s["id"] for s in sites]
+    for start,stop,dist,w,so,denom in _scenario_blocks(P,cols):
+        yield _pair_frame([a["id"] for a in d["areas"][start:stop]],ids,dist,w/denom[:,None],so/denom,
+                          P.demand[start:stop],P.p["distance_floor"])
 
 
 COMPARE_COLUMNS = ["candidate","status","candidate_demand","own_portfolio_change","existing_own_change","competitor_change","outside_change","access_gap_change"]

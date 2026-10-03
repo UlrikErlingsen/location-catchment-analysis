@@ -4,7 +4,7 @@ import json
 import pandas as pd
 import streamlit as st
 
-from reachsignal import portable as io
+from reachsignal import limits, portable as io
 from reachsignal import input_format as fmt, spreadsheets as sheets
 from reachsignal.ui import data_input
 from reachsignal.ui.keys import hub_mode, k
@@ -78,7 +78,7 @@ class Workspace:
             if st.form_submit_button("Start blank case", key=k("blank_case")):
                 self.put(io.project(self.name, self.model.validate(self.model.starter(brief)), "User-defined case"))
                 st.rerun()
-        notes = st.text_area("Information or source material for your AI", max_chars=35000, height=160, key=k("notes"))
+        notes = st.text_area("Information or source material for your AI", max_chars=limits.cap("notes_chars"), height=160, key=k("notes"))
         st.caption("Copy the prompt into your preferred AI. Paste its JSON back below. No API key or automatic data transfer is involved.")
         current, note = self.d, ""
         large = {t: len(self.d[t]) for t in self.model.ROW_TABLES if len(self.d[t]) > AI_ROWS}
@@ -104,7 +104,7 @@ class Workspace:
         with st.expander("Paste or upload the response", expanded=True):
             method = st.radio("Input method", ["Paste JSON", "Upload JSON"], horizontal=True, key=k("method"))
             if method == "Paste JSON":
-                raw = st.text_area("AI JSON response", height=200, max_chars=1000000, key=k("ai_json"))
+                raw = st.text_area("AI JSON response", height=200, max_chars=limits.cap("paste_chars"), key=k("ai_json"))
             else:
                 file = st.file_uploader("AI research JSON", type="json", key=k("ai_file"))
                 raw = file.getvalue() if file else b""
@@ -170,8 +170,9 @@ class Workspace:
                 self.put(io.accept(self.p, name, note))
                 st.rerun()
 
-    def export(self, html, tables):
-        """html and tables are functions of the project. The files are built only when a download button is clicked
+    def export(self, html, tables, streams):
+        """html, tables and streams are functions of the project. tables returns (tables, notes for the Excel read-me);
+        streams returns long tables as blocks for the ZIP. The files are built only when a download button is clicked
         (Streamlit runs the callable then, outside the script run), so large cases do not slow down every rerun."""
         p, model, name = self.p, self.model, self.name
         if hub_mode():
@@ -179,12 +180,13 @@ class Workspace:
                     "Download the project JSON or the Excel workbook to keep your work.")
         else:
             st.caption("Save your project before closing the browser. Session data is not automatically persisted. Open the HTML brief in a browser to print or save as PDF.")
-        st.caption("Each file is prepared when you click its button. For a large case this can take a little while.")
+        st.caption("Each file is prepared when you click its button. For a large case this can take a little while. The Evidence ZIP holds "
+                   "every row, including the full area × location allocation table.")
         c1, c2, c3, c4 = st.columns(4)
-        c1.download_button("Download Excel", lambda: sheets.project_workbook(model, p["data"], tables(p)), name + "-results.xlsx", sheets.MIME, key=k("excel_results"))
+        c1.download_button("Download Excel", lambda: sheets.project_workbook(model, p["data"], *tables(p)), name + "-results.xlsx", sheets.MIME, key=k("excel_results"))
         c2.download_button("Save project JSON", lambda: io.json_bytes(p), name + "-project.json", "application/json", key=k("save"))
         c3.download_button("Printable brief", lambda: html(p), name + "-brief.html", "text/html", key=k("print"))
-        c4.download_button("Evidence ZIP", lambda: io.bundle(p, html(p), tables(p), model.REFERENCES), name + "-evidence.zip", "application/zip", key=k("zip"))
+        c4.download_button("Evidence ZIP", lambda: io.bundle(p, html(p), tables(p)[0], model.REFERENCES, streams(p)), name + "-evidence.zip", "application/zip", key=k("zip"))
         st.caption("Project fingerprint: " + self.cached("digest", lambda: io.digest(p)))
         with st.expander("Restore a saved project"):
             upload = st.file_uploader("Saved project JSON", type="json", key=k("restore_file"))

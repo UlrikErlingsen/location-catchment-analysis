@@ -4,8 +4,8 @@ import hashlib
 import pandas as pd
 import streamlit as st
 
-from reachsignal import input_format as fmt, model, portable as io, spreadsheets as sheets
-from reachsignal.ui.keys import hub_mode, k
+from reachsignal import input_format as fmt, limits, model, portable as io, spreadsheets as sheets
+from reachsignal.ui.keys import k
 
 MODES = ["Excel or CSV", "Enter manually", "Use your AI"]
 PAGE = "1 · Add your data"
@@ -98,9 +98,13 @@ def spreadsheet_input(w):
     templates(w)
     uploads = st.file_uploader("Upload your Excel workbook or CSV files", type=["xlsx", "csv"], accept_multiple_files=True, key=k("spreadsheets"))
     st.caption("Excel can contain several sheets. For separate CSV tables, select the files together. Files stay in this session's memory; nothing is written to disk or sent to an AI.")
-    st.caption(f"Limits: {sheets.MAX_BYTES // 1_000_000:,} MB per upload, {sheets.MAX_ROWS:,} rows per sheet or CSV, {model.MAX_AREAS:,} customer areas, "
-               f"{model.MAX_SITES:,} locations, {model.MAX_DISTANCES:,} travel-time pairs, and areas × locations up to {model.MAX_PAIRS:,}. "
-               "CSV reads faster than Excel for very large tables." + (" Signal Hub may set a lower upload limit." if hub_mode() else ""))
+    if limits.public():
+        c = limits.DEMO
+        st.caption(f"Public demo limits: {c['upload_mb']:,} MB per upload, {c['rows']:,} rows per sheet or CSV, {c['areas']:,} customer areas, "
+                   f"{c['sites']:,} locations, {c['distances']:,} travel-time pairs and {c['pairs']:,} areas × locations. "
+                   "The downloaded app has no data limits.")
+    else:
+        st.caption("No data limits: how much you can load depends on this computer's memory. CSV reads much faster than Excel for very large tables.")
     if not uploads:
         return
     fingerprint = _fingerprint(uploads)

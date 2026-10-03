@@ -56,11 +56,13 @@ The candidate comparison is repeated for β = 0.5, 1.0, 1.5, 2.0 and 3.0, with a
 
 The engine processes customer areas in blocks of about one million area × location cells, so memory grows with the number of areas and locations, not with their product. Validation is done column by column. Results for the current inputs are computed once per change in the app, not on every click.
 
+There are no app-imposed limits on the number of areas or locations on your own computer; memory is the limit, and running out of it is reported as a plain message. A public demo (`SIGNAL_PUBLIC=1`) applies the caps listed in the [data guide](data-guide.md#data-limits).
+
 What is shortened is display only, and each place says so:
 
 - the map aggregates areas into a grid of about 60 × 60 cells above 3,000 areas (demand-weighted colours);
 - on-screen tables show their largest 10,000 rows;
-- the pair-level allocation table covers the first areas up to 100,000 rows;
+- the pair-level allocation table in the app and the Excel file covers the first areas up to 100,000 rows; the Evidence ZIP writes every area × location row, block by block;
 - the printable brief shows 200 rows per table.
 
 Measured on a synthetic case of 200,000 customer areas and 50 locations (10 candidates) on a Windows desktop shared with other work:

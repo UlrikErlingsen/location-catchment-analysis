@@ -15,7 +15,7 @@ import pandas as pd
 from jsonschema import Draft202012Validator, FormatChecker
 import numpy as np
 
-MAX_JSON_BYTES = 1_000_000_000  # same 1,000 MB ceiling as spreadsheet uploads
+from reachsignal import limits
 
 
 class DataProblem(ValueError):
@@ -36,7 +36,8 @@ def number(low=0, high=1e12, nullable=False):
 
 
 def array(item, limit=500, minimum=0):
-    return {"type": "array", "items": item, "minItems": minimum, "maxItems": limit}
+    spec = {"type": "array", "items": item, "minItems": minimum}
+    return spec if limit is None else {**spec, "maxItems": limit}
 
 
 ID = {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,39}$"}
@@ -59,8 +60,8 @@ def finite(value):
 def parse(payload):
     try:
         value = payload.decode("utf-8-sig") if isinstance(payload, bytes) else payload
-        if len(value.encode("utf-8")) > MAX_JSON_BYTES:
-            raise DataProblem(f"Keep the JSON file below {MAX_JSON_BYTES // 1_000_000:,} MB.")
+        if limits.over("json_mb", len(value.encode("utf-8")) / 1_000_000):
+            raise DataProblem(limits.demo_limit(f"Keep the JSON file below {limits.cap('json_mb'):,} MB."))
         value = value.strip().lstrip("\ufeff")
         match = re.fullmatch(r"```(?:json)?\s*\n(.*?)\n```", value, re.S | re.I)
         if match:
@@ -242,14 +243,14 @@ def json_bytes(data):
     return json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False).encode("utf-8")
 
 
-def csv_bytes(frame):
+def csv_bytes(frame, header=True):
     def safe(value):
         if isinstance(value, str) and value.lstrip().startswith(("=", "+", "-", "@")):
             return "'" + value
         return value
     # Only text can be read as a formula; numeric and boolean columns are written unchanged.
     frame = frame.apply(lambda col: col.map(safe) if col.dtype == object else col)
-    return frame.to_csv(index=False).encode("utf-8-sig")
+    return frame.to_csv(index=False, header=header).encode("utf-8-sig" if header else "utf-8")
 
 
 def report(title, p, sections, references, limits):
@@ -279,12 +280,21 @@ def lambda_string(value):
     return escape(str(value), quote=True)
 
 
-def bundle(p, html, tables, references):
+def bundle(p, html, tables, references, streams=None):
+    """ZIP evidence pack. `streams` maps a table name to an iterable of DataFrame blocks, written one block at a time
+    so a very long table (every area x location row) never has to sit in memory at once; it replaces a table of the
+    same name."""
+    streams = streams or {}
     buf = BytesIO()
     with ZipFile(buf, "w", ZIP_DEFLATED) as z:
         z.writestr("project.json", json_bytes(p))
         z.writestr("brief.html", html)
         z.writestr("references.json", json_bytes({"references": references, "project_sha256": digest(p)}))
         for label, table in tables.items():
-            z.writestr(label + ".csv", csv_bytes(table))
+            if label not in streams:
+                z.writestr(label + ".csv", csv_bytes(table))
+        for label, blocks in streams.items():
+            with z.open(label + ".csv", "w", force_zip64=True) as out:
+                for i, block in enumerate(blocks):
+                    out.write(csv_bytes(block, header=i == 0))
     return buf.getvalue()

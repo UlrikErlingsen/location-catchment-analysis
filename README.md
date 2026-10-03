@@ -35,7 +35,7 @@ Everything runs locally with open-source Python packages. There is no account, t
 - a Huff model, `A^α / d^β`, with an explicit outside option, on straight-line (Haversine) kilometres or a complete area × location matrix of travel minutes;
 - the baseline catchment, each candidate's allocation, its effect on your existing sites, competitors and the outside option, and a distance-decay sensitivity check;
 - an access threshold that reports demand lying beyond a chosen distance from any site;
-- large cases: up to 500,000 customer areas, 500 locations and 25 million area × location pairs, computed in full;
+- large cases with no app-imposed limits on your own computer: hundreds of thousands of customer areas are computed in full, in blocks that keep memory in check;
 - Excel or CSV upload, manual entry, and an optional copy-and-paste AI prompt for structuring research;
 - Excel, project JSON, a printable HTML brief and an evidence ZIP.
 
@@ -67,11 +67,28 @@ Two spreadsheet layouts, plus JSON. Excel `.xlsx` or UTF-8 CSV (comma, semicolon
 
 **Complete project workbook**: the sheets *Case*, *Scope*, *Model settings*, *Customer areas*, *Locations*, *Travel times* and *Sources*, linked by reference columns. This is the layout the Excel export writes, and the one that carries a travel-time matrix (one row per area × location, in minutes).
 
-**Limits.** Uploads up to 1,000 MB (the launcher default, set by `REACHSIGNAL_MAX_UPLOAD_MB`); 1,000,000 rows per sheet or CSV and 10 million cells per upload; 500,000 customer areas, 500 locations, 1,000,000 travel-time pairs, and at most 25 million area × location pairs in one case. Above those, aggregate small areas (postcodes into districts, or a coarser grid) or drop locations you do not need. CSV is much faster than Excel for very large tables.
-
 A file or case is rejected, with the reason shown, for: repeated area or location names or IDs, a reference to a missing area, location or source, only one of two coordinates, negative demand, attractiveness of zero or below, latitudes outside ±85°, duplicate travel-time pairs, no existing own or competitor site, ambiguous decimal separators, percent signs in ordinary number columns, formulas without a saved result, Excel error cells, or the old `.xls` format.
 
 See the [data guide](docs/data-guide.md).
+
+### Data limits
+
+**On your own computer there are none.** Standalone, in a local Signal Hub or on a company's own server, Reach Signal sets no limit on file size, rows, cells, customer areas or locations; the computer's memory is the limit. Streamlit's upload cap defaults to 10,000 MB (`REACHSIGNAL_MAX_UPLOAD_MB` in the launchers, `STREAMLIT_SERVER_MAX_UPLOAD_SIZE` in Docker). If a file or calculation does not fit in memory, the app says so in plain words instead of crashing. CSV reads much faster than Excel for very large tables, and one Excel sheet holds at most 1,048,575 rows (longer exported tables continue on further sheets, which the importer joins again).
+
+**A public demo** (`SIGNAL_PUBLIC=1`, as on a shared Hub server) applies hard caps, and says so when one is reached:
+
+| Demo cap (`SIGNAL_PUBLIC=1` only) | Value |
+|---|---|
+| Upload size | 50 MB |
+| Project or AI JSON file | 50 MB |
+| Pasted AI reply | 2,000,000 characters |
+| Rows per sheet or CSV | 200,000 |
+| Columns per sheet; sheets per workbook | 80; 30 |
+| Cells per upload | 2,000,000 |
+| Customer areas | 50,000 |
+| Locations (all roles) | 100 |
+| Travel-time pairs | 200,000 |
+| Areas × locations | 2,000,000 |
 
 ## Analysis contract
 
@@ -86,7 +103,7 @@ Before any result is shown, the case declares what demand measures (residents, v
 5. **Access:** demand in areas whose nearest listed site is beyond the access threshold, independent of the Huff shares.
 6. **Sensitivity:** the comparison is repeated for β = 0.5, 1.0, 1.5, 2.0 and 3.0, everything else fixed.
 
-The engine works on arrays in blocks of areas, so memory grows with the number of areas, not with areas × locations. On a synthetic 200,000-area × 50-location case (10 candidates) on a desktop PC, reading and checking the CSV files took about 3 s, the baseline about 1.5 s, all candidate comparisons about 1.5 s and the five-step sensitivity about 2 s, with a process peak below 650 MB. The map aggregates areas into a grid above 3,000 areas, on-screen tables show their largest 10,000 rows, the pair-level allocation table covers at most 100,000 rows, and the printable brief shows 200 rows per table; each says so where it happens, and every total uses all areas.
+The engine works on arrays in blocks of areas, so memory grows with the number of areas, not with areas × locations. On a synthetic 200,000-area × 50-location case (10 candidates) on a desktop PC, reading and checking the CSV files took about 3 s, the baseline about 1.5 s, all candidate comparisons about 1.5 s and the five-step sensitivity about 2 s, with a process peak below 650 MB. Only what is drawn on screen is shortened: the map aggregates areas into a grid above 3,000 areas, on-screen tables show their largest 10,000 rows, the pair-level allocation table in the app and the Excel file covers at most 100,000 rows, and the printable brief shows 200 rows per table. Each says so where it happens; every calculation uses all areas, and the Evidence ZIP holds every row.
 
 See [methods](docs/methods.md).
 
@@ -104,10 +121,10 @@ Warnings sit beside the results: a zero outside weight (a closed choice set), di
 
 From **5 · Export**, each file is prepared when you click it:
 
-- **Excel workbook**: the case brief, every input table in the importable layout, and, once the case is reviewed and complete, result sheets (baseline allocations, area access and choice, the pair-level allocation table and the candidate comparison). Review signatures are not carried through Excel; a re-imported workbook needs a new review.
+- **Excel workbook**: the case brief, every input table in the importable layout, and, once the case is reviewed and complete, result sheets (baseline allocations, area access and choice, the pair-level allocation table for the first 100,000 rows, and the candidate comparison). Review signatures are not carried through Excel; a re-imported workbook needs a new review.
 - **Project JSON**: the full case with its origin and review record, which can be restored in the app.
 - **Printable brief**: HTML with units, inputs, results, sources, limits and references, ready to print or save as PDF.
-- **Evidence ZIP**: `project.json`, `brief.html`, `references.json` and every table as CSV, with the project's SHA-256 fingerprint.
+- **Evidence ZIP**: `project.json`, `brief.html`, `references.json` and every table as CSV, including the full area × location allocation table, with the project's SHA-256 fingerprint.
 
 Exports contain your full input rows, so treat them like the source data. CSV text beginning with `=`, `+`, `-` or `@` is prefixed with an apostrophe, and Excel text cells are stored as literal text, so neither is read as a formula.
 
@@ -126,7 +143,7 @@ python -m pip install -r requirements.txt
 python -m streamlit run app.py
 ```
 
-Then open the local address shown in the terminal. Reach Signal prefers local port 8599; the macOS launcher falls back to another free port if it is taken. Both launchers accept `REACHSIGNAL_PORT` and `REACHSIGNAL_MAX_UPLOAD_MB` (default 1000), and the macOS launcher also accepts `REACHSIGNAL_NO_BROWSER=1`.
+Then open the local address shown in the terminal. Reach Signal prefers local port 8599; the macOS launcher falls back to another free port if it is taken. Both launchers accept `REACHSIGNAL_PORT` and `REACHSIGNAL_MAX_UPLOAD_MB` (default 10000), and the macOS launcher also accepts `REACHSIGNAL_NO_BROWSER=1`.
 
 ### Docker
 
@@ -135,7 +152,7 @@ docker build -t reachsignal .
 docker run --rm -p 8599:8599 reachsignal
 ```
 
-Then open http://127.0.0.1:8599. The container runs as a non-root user and accepts uploads up to 1,000 MB (`STREAMLIT_SERVER_MAX_UPLOAD_SIZE`).
+Then open http://127.0.0.1:8599. The container runs as a non-root user and accepts uploads up to 10,000 MB (`STREAMLIT_SERVER_MAX_UPLOAD_SIZE`). Set `SIGNAL_PUBLIC=1` for a public demo with the caps above.
 
 ## Privacy
 
@@ -154,7 +171,7 @@ python -m ruff check .
 python -m build
 ```
 
-The model core installs without Streamlit or Plotly; `pip install -e ".[ui]"` adds the app dependencies. Tests cover hand-computed Huff shares with an outside option, demand conservation, candidate reallocation identities, the Haversine distance, the distance floor, missing-input handling, agreement between the one-pass comparison and scenario-by-scenario allocation on a 20,000-area case, fast validation and size limits, Excel and CSV round trips, spreadsheet-safe exports, every Streamlit page, and the Signal Hub contract (`reachsignal.ui.render`, namespaced keys, Hub mode, no repo-root file reads).
+The model core installs without Streamlit or Plotly; `pip install -e ".[ui]"` adds the app dependencies. Tests cover hand-computed Huff shares with an outside option, demand conservation, candidate reallocation identities, the Haversine distance, the distance floor, missing-input handling, agreement between the one-pass comparison and scenario-by-scenario allocation on a 20,000-area case, fast validation, no limits locally and enforced caps on a public demo, the full pair table in the ZIP, Excel continuation sheets, Excel and CSV round trips, spreadsheet-safe exports, every Streamlit page, and the Signal Hub contract (`reachsignal.ui.render`, namespaced keys, Hub mode, no repo-root file reads).
 
 ## Where this fits in Signal
 

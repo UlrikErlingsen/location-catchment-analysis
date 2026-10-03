@@ -15,16 +15,19 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 import pandas as pd
 
-from . import input_format as fmt, portable as io
+from . import input_format as fmt, limits, portable as io
 
 MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-MAX_BYTES = 1_000_000_000      # 1,000 MB across the files of one upload
-MAX_ROWS = 1_000_000           # per sheet or CSV; one Excel sheet holds 1,048,575 data rows
-MAX_CELLS = 10_000_000         # across all sheets of one upload, so the parsed tables fit in memory
-MAX_UNZIPPED = 2_500_000_000   # opened size of an .xlsx (its XML is typically 5-10 times the file size)
+# No upload limits outside a public demo (see reachsignal.limits); the computer's memory is the limit.
 STYLE_CELLS = 200_000          # exports above this many cells are streamed without per-cell formatting
 EXCEL_ROWS = 1_048_575
 RESULT_SHEET = re.compile(r"Result \d+ ")  # written by project_workbook; skipped on import
+CONTINUED = re.compile(r"^(.*) \(cont\. (\d+)\)$")  # a table longer than one Excel sheet continues on these sheets
+
+
+def _too_big(what, name, value):
+    if limits.over(name, value):
+        raise io.DataProblem(limits.demo_limit(f"{what}: keep at most {limits.cap(name):,} {name}."))
 COMMON_LABELS = {"id": "Reference", "name": "Name", "source_id": "Source reference", "note": "Notes", "url": "Source URL", "title": "Source title"}
 
 
@@ -58,8 +61,8 @@ def _frame(rows, title):
         raise io.DataProblem(f"{title}: put a name in every used column of the first row.")
     if len(set(map(normalize, header))) != len(header):
         raise io.DataProblem(f"{title}: column names must be distinct. Rename the duplicate headings.")
-    if len(rows)-1 > MAX_ROWS or len(header) > 80:
-        raise io.DataProblem(f"{title}: keep at most {MAX_ROWS:,} rows and 80 columns.")
+    _too_big(title, "rows", len(rows)-1)
+    _too_big(title, "columns", len(header))
     data = []
     for index, row in enumerate(rows[1:], 2):
         if any(v not in (None, "") for v in row[len(header):]):
@@ -72,8 +75,10 @@ def _frame(rows, title):
 
 def load_tables(files):
     """files is [(filename, bytes)]; no file contents enter a shared cache."""
-    if not files or sum(len(raw) for _, raw in files) > MAX_BYTES:
-        raise io.DataProblem(f"Choose Excel (.xlsx) or UTF-8 CSV files totalling no more than {MAX_BYTES // 1_000_000:,} MB.")
+    if not files:
+        raise io.DataProblem("Choose Excel (.xlsx) or UTF-8 CSV files.")
+    if limits.over("upload_mb", sum(len(raw) for _, raw in files) / 1_000_000):
+        raise io.DataProblem(limits.demo_limit(f"Choose files totalling no more than {limits.cap('upload_mb'):,} MB."))
     tables = {}
     cell_count = 0
     for filename, raw in files:
@@ -88,29 +93,29 @@ def load_tables(files):
                     dialect = csv.excel
                 reader = csv.reader(StringIO(text), dialect, strict=True)
                 rows = []
+                row_cap, column_cap = limits.cap("rows"), limits.cap("columns")
                 for row in reader:
-                    if len(rows) > MAX_ROWS or len(row) > 80:
-                        raise io.DataProblem(f"{filename}: keep at most {MAX_ROWS:,} rows and 80 columns.")
+                    if row_cap is not None and len(rows) > row_cap + 1:
+                        _too_big(filename, "rows", len(rows))
+                    if column_cap is not None:
+                        _too_big(filename, "columns", len(row))
                     rows.append(row)
                 parsed[Path(filename).stem] = _frame(rows, filename)
             elif suffix == ".xlsx":
                 with ZipFile(BytesIO(raw)) as archive:
-                    if sum(f.file_size for f in archive.infolist()) > MAX_UNZIPPED or len(archive.infolist()) > 1000:
-                        raise io.DataProblem("This workbook is too large when opened. Keep only the sheets and rows you need.")
+                    if limits.over("unzipped_mb", sum(f.file_size for f in archive.infolist()) / 1_000_000):
+                        raise io.DataProblem(limits.demo_limit("This workbook is too large when opened. Keep only the sheets and rows you need."))
                 formulas = load_workbook(BytesIO(raw), read_only=True, data_only=False, keep_links=False)
                 cached = None
                 try:
-                    if len(formulas.worksheets) > 30:
-                        raise io.DataProblem("Keep at most 30 sheets in the workbook.")
+                    _too_big("This workbook", "sheets", len(formulas.worksheets))
                     for sheet in formulas.worksheets:
                         if RESULT_SHEET.match(sheet.title):
                             continue  # result sheets of an exported workbook are never model inputs
-                        if sheet.max_row and sheet.max_row > MAX_ROWS + 1 or sheet.max_column and sheet.max_column > 80:
-                            raise io.DataProblem(f"{sheet.title}: keep at most {MAX_ROWS:,} rows and 80 columns, including formatted cells.")
+                        _too_big(sheet.title, "rows", (sheet.max_row or 1) - 1)
+                        _too_big(sheet.title, "columns", sheet.max_column or 0)
                         rows, pending = [], []
                         for r, row in enumerate(sheet.iter_rows()):
-                            if len(rows) > MAX_ROWS:
-                                raise io.DataProblem("Too many workbook rows.")
                             values = []
                             for c, cell in enumerate(row):
                                 kind = cell.data_type
@@ -155,14 +160,29 @@ def load_tables(files):
             if frame is None or normalize(name) in {"readme", "instructions"}:
                 continue
             cell_count += (len(frame)+1) * len(frame.columns)
-            if cell_count > MAX_CELLS:
-                raise io.DataProblem(f"The combined files contain more than {MAX_CELLS:,} cells. Remove unused sheets and columns, or aggregate small areas.")
+            _too_big("The combined files", "cells", cell_count)
             title = name if name not in tables else f"{Path(filename).stem} / {name}"
             if title in tables:
                 raise io.DataProblem("Two files have the same sheet names. Rename a file or sheet to distinguish them.")
             tables[title] = frame
     if not tables:
         raise io.DataProblem("No data tables found. Put column headings on the first row and data underneath.")
+    return _join_continued(tables)
+
+
+def _join_continued(tables):
+    """Append "<sheet> (cont. N)" sheets, written for tables longer than one Excel sheet, to their first sheet."""
+    parts = {}
+    for title in list(tables):
+        match = CONTINUED.match(title)
+        if not match:
+            continue
+        bases = [t for t in tables if not CONTINUED.match(t) and t.startswith(match.group(1))]
+        if len(bases) != 1 or list(tables[bases[0]].columns) != list(tables[title].columns):
+            raise io.DataProblem(f"{title}: cannot tell which sheet it continues. Keep its columns identical to the first sheet.")
+        parts.setdefault(bases[0], []).append((int(match.group(2)), tables.pop(title)))
+    for base, more in parts.items():
+        tables[base] = pd.concat([tables[base], *[frame for _, frame in sorted(more, key=lambda x: x[0])]], ignore_index=True)
     return tables
 
 
@@ -315,18 +335,27 @@ def complete_project(model, brief, tables):
     return model.validate(d)
 
 
+def _sheet_title(title):
+    return re.sub(r"[\\/*?:\[\]]", " ", title)[:31]
+
+
 def _workbook(tables, instructions):
-    data = {"Read me": pd.DataFrame({"Instructions": instructions}), **tables}
-    for title, frame in data.items():
-        if len(frame) > EXCEL_ROWS:
-            raise io.DataProblem(f"{title} has {len(frame):,} rows, more than one Excel sheet holds. Use the ZIP export.")
+    data = {}
+    for title, frame in {"Read me": pd.DataFrame({"Instructions": instructions}), **tables}.items():
+        if len(frame) <= EXCEL_ROWS:
+            data[title] = frame
+            continue
+        # One Excel sheet holds 1,048,575 data rows; longer tables continue on further sheets.
+        base = _sheet_title(title)
+        for part, first in enumerate(range(0, len(frame), EXCEL_ROWS), 1):
+            suffix = f" (cont. {part})"
+            data[base if part == 1 else base[:31 - len(suffix)] + suffix] = frame.iloc[first:first + EXCEL_ROWS]
     if sum(len(frame) * max(1, len(frame.columns)) for frame in data.values()) > STYLE_CELLS:
         return _streamed_workbook(data)
     book = Workbook()
     book.remove(book.active)
     for title, frame in data.items():
-        safe_title = re.sub(r"[\\/*?:\[\]]", " ", title)[:31]
-        sheet = book.create_sheet(safe_title)
+        sheet = book.create_sheet(_sheet_title(title))
         for row in [list(frame.columns)] + frame.astype(object).where(pd.notna(frame), None).values.tolist():
             sheet.append(row)
             for cell in sheet[sheet.max_row]:
@@ -358,7 +387,7 @@ def _streamed_workbook(data):
         return cell
 
     for title, frame in data.items():
-        sheet = book.create_sheet(re.sub(r"[\\/*?:\[\]]", " ", title)[:31])
+        sheet = book.create_sheet(_sheet_title(title))
         for i, column in enumerate(frame.columns, 1):
             values = [str(column)] + [str(v) for v in frame[column].head(30) if v is not None]
             sheet.column_dimensions[get_column_letter(i)].width = min(60, max(18, max(map(len, values), default=18)+2))
@@ -389,7 +418,7 @@ def csv_template(key):
     return io.csv_bytes(frame)
 
 
-def project_workbook(model, data, results=None):
+def project_workbook(model, data, results=None, notes=()):
     tables = {"Case": pd.DataFrame({"Case brief": [data["brief"]]})}
     for name in model.TITLES:
         columns = list(model.SCHEMA["properties"][name]["items"]["properties"])
@@ -397,4 +426,4 @@ def project_workbook(model, data, results=None):
     for i, (name, frame) in enumerate((results or {}).items(), 1):
         if name not in model.TITLES:
             tables[f"Result {i} {name}"[:31]] = frame
-    return _workbook(tables, ["Signal project workbook. Imported workbooks always need a new review; review signatures are not imported from Excel.", "If this is the fictional example, replace example rows and the case brief before using it for your business.", "Import using Complete project workbook. Sheets and columns are suggested automatically; confirm or correct them.", "Reference columns link related tables. Preserve references when renaming a record. Empty numeric cells remain unknown.", "Result sheets are exports only; the importer does not use them as model inputs."])
+    return _workbook(tables, ["Signal project workbook. Imported workbooks always need a new review; review signatures are not imported from Excel.", "If this is the fictional example, replace example rows and the case brief before using it for your business.", "Import using Complete project workbook. Sheets and columns are suggested automatically; confirm or correct them.", "Reference columns link related tables. Preserve references when renaming a record. Empty numeric cells remain unknown.", "Result sheets are exports only; the importer does not use them as model inputs.", "A table longer than one Excel sheet (1,048,575 rows) continues on sheets named '… (cont. 2)'; the importer joins them again.", *notes])

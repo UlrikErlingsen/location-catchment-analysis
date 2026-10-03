@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from reachsignal import __version__, model, portable as io
+from reachsignal import __version__, limits, model, portable as io
 from reachsignal.ui import signal_theme as sig
 from reachsignal.ui.keys import NS, k
 from reachsignal.ui.workspace import Workspace
@@ -83,14 +83,29 @@ def coordinate_map(w,result,candidate,metric):
         st.warning("This is a broad geographic extent. The local coordinate sketch distorts geometry; use the distance tables for interpretation.")
 
 
+def _calculable(p):
+    return io.reviewed(p) and not model.readiness_summary(p["data"],limit=0)[0]
+
+
 def export_tables(p):
-    """Input and result tables for the Excel and ZIP exports (runs when a download is clicked, outside the script)."""
+    """Input and result tables for the Excel and ZIP exports, plus read-me notes for the Excel file (runs when a
+    download is clicked, outside the script)."""
     d=p["data"]
     tables={name:pd.DataFrame(d[name]) for name in model.TITLES}
-    if io.reviewed(p) and not model.readiness_summary(d,limit=0)[0]:
-        tables.update({"baseline_"+name:v for name,v in model.allocate(d).items() if isinstance(v,pd.DataFrame)})
+    notes=[]
+    if _calculable(p):
+        result=model.allocate(d)
+        tables.update({"baseline_"+name:v for name,v in result.items() if isinstance(v,pd.DataFrame)})
         tables["candidate_comparison"]=model.compare(d)
-    return tables
+        if result["allocation_areas"]<result["area_count"]:
+            notes.append(f"The baseline_allocation sheet covers the first {result['allocation_areas']:,} of {result['area_count']:,} customer areas. "
+                         "The Evidence ZIP holds every area × location row.")
+    return tables,notes
+
+
+def export_streams(p):
+    """The full pair-level allocation table for the ZIP, written block by block."""
+    return {"baseline_allocation":model.allocation_blocks(p["data"])} if _calculable(p) else {}
 
 
 def render():
@@ -186,9 +201,11 @@ def render():
                     st.caption("This varies β while keeping attractiveness, outside weights and demand fixed. It is an assumption check, not a fitted confidence interval or automatic site recommendation.")
         elif page==pages[5]:
             sig.header("SAVE & SHARE","Export the case.","Excel, project JSON, a printable brief and an evidence ZIP. Nothing is stored for you.")
-            w.export(model.printable,export_tables)
+            w.export(model.printable,export_tables,export_streams)
         else:
             w.research()
     except io.DataProblem as exc:
         st.error(str(exc))
+    except MemoryError:
+        st.error(limits.OUT_OF_MEMORY)
     sig.footer(NS,__version__,"Geographic scenarios with transparent assumptions")

@@ -76,7 +76,7 @@ def test_travel_time_matrix_at_scale_matches_and_gaps_are_counted():
         model.allocate(d)
 
 
-def test_fast_validation_reports_the_failing_row_and_enforces_size_limits(case):
+def test_fast_validation_reports_the_failing_row(case):
     bad = {**case, "areas": [dict(a) for a in case["areas"]]}
     bad["areas"][12_345]["demand"] = -1
     with pytest.raises(io.DataProblem, match="areas / 12345 / demand"):
@@ -87,10 +87,6 @@ def test_fast_validation_reports_the_failing_row_and_enforces_size_limits(case):
     bad["areas"][12_345].update(demand=1.0, id="1bad")
     with pytest.raises(io.DataProblem, match="areas / 12345 / id"):
         model.validate(bad)
-    huge = {**case, "areas": case["areas"] * (model.MAX_PAIRS // (AREAS * SITES) + 1)}
-    huge["areas"] = [{**a, "id": f"A{i}"} for i, a in enumerate(huge["areas"])]
-    with pytest.raises(io.DataProblem, match="Aggregate small areas"):
-        model.validate(huge)
 
 
 def test_map_grid_keeps_total_demand(case):

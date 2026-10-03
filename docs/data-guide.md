@@ -48,23 +48,35 @@ This is the layout the Excel export writes, and the only spreadsheet layout that
 
 References start with a letter and use letters, digits, `_` or `-` (up to 40 characters). `OUTSIDE` is reserved. In travel-time mode every area needs a time to every baseline site, and to a candidate before that candidate can be compared. Straight-line distance is never substituted for a missing travel time. Result sheets in an exported workbook are skipped on import.
 
-## Size limits
+## Data limits
 
-| Limit | Value |
+On your own computer, Reach Signal imposes no limits on file size, rows, cells, customer areas, locations or travel-time pairs. The computer's memory is the limit, and if something does not fit, the app says so plainly. Streamlit's upload cap defaults to 10,000 MB (`REACHSIGNAL_MAX_UPLOAD_MB` in the launchers, `STREAMLIT_SERVER_MAX_UPLOAD_SIZE` in Docker).
+
+Two practical notes for very large cases:
+
+- CSV reads in seconds where Excel takes minutes. The Excel export of a 200,000-area case takes well under a minute to write, and longer to import again.
+- One Excel sheet holds 1,048,575 data rows. A longer table (for example a travel-time matrix of several million pairs) is exported across sheets named "… (cont. 2)", "… (cont. 3)", which the importer joins again; CSV has no such limit.
+
+A public demo started with `SIGNAL_PUBLIC=1` protects its shared server with hard caps, and every capped message says it is a demo limit:
+
+| Demo cap (`SIGNAL_PUBLIC=1` only) | Value |
 |---|---|
-| Upload size | 1,000 MB (launcher default; `REACHSIGNAL_MAX_UPLOAD_MB`) |
-| Rows per sheet or CSV | 1,000,000 |
-| Cells per upload | 10,000,000 |
-| Customer areas | 500,000 |
-| Locations (all roles) | 500 |
-| Travel-time pairs | 1,000,000 |
-| Areas × locations | 25,000,000 |
+| Upload size | 50 MB |
+| Project or AI JSON file | 50 MB |
+| Pasted AI reply | 2,000,000 characters |
+| Rows per sheet or CSV | 200,000 |
+| Columns per sheet; sheets per workbook | 80; 30 |
+| Cells per upload | 2,000,000 |
+| Customer areas | 50,000 |
+| Locations (all roles) | 100 |
+| Travel-time pairs | 200,000 |
+| Areas × locations | 2,000,000 |
 
-The model always uses every area. When a case is too large, aggregate small areas (postcodes into districts, or a coarser grid) or remove locations you do not need. For very large tables, CSV reads in seconds where Excel takes minutes; the Excel export of a 200,000-area case takes well under a minute to write, and longer to import again.
+The model always uses every area. Only displays are shortened, each with a note: the map, on-screen tables, the pair-level table in the app and the Excel file, and the printable brief. The Evidence ZIP holds every row.
 
 ## What gets rejected
 
-The import stops and says why when it finds: repeated names or references; a reference to a missing area, location or source; only one of two coordinates; negative demand or outside weight; attractiveness of zero or below; out-of-range latitudes or longitudes; duplicate travel-time pairs; no own or competitor site; text where a number belongs; percent signs in ordinary number columns; formulas without a saved result (recalculate and save in Excel first); Excel error cells; more than 30 sheets or 80 columns; or the old `.xls` format (save as `.xlsx`).
+The import stops and says why when it finds: repeated names or references; a reference to a missing area, location or source; only one of two coordinates; negative demand or outside weight; attractiveness of zero or below; out-of-range latitudes or longitudes; duplicate travel-time pairs; no own or competitor site; text where a number belongs; percent signs in ordinary number columns; formulas without a saved result (recalculate and save in Excel first); Excel error cells; or the old `.xls` format (save as `.xlsx`).
 
 ## Before you upload
 
