@@ -1,6 +1,6 @@
 pandas>=2.0,<3
 jsonschema>=4.21,<5
-streamlit>=1.50,<2
+streamlit>=1.51,<2
 plotly>=5.18,<8
 numpy>=1.24,<3
 openpyxl>=3.1.5,<4

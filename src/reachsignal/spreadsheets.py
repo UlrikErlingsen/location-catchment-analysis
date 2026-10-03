@@ -9,6 +9,8 @@ import re
 from zipfile import BadZipFile, ZipFile
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.cell import WriteOnlyCell
+from openpyxl.cell.cell import ERROR_CODES
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 import pandas as pd
@@ -16,9 +18,13 @@ import pandas as pd
 from . import input_format as fmt, portable as io
 
 MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-MAX_BYTES = 5_000_000
-MAX_ROWS = 10_000
-MAX_CELLS = 250_000
+MAX_BYTES = 1_000_000_000      # 1,000 MB across the files of one upload
+MAX_ROWS = 1_000_000           # per sheet or CSV; one Excel sheet holds 1,048,575 data rows
+MAX_CELLS = 10_000_000         # across all sheets of one upload, so the parsed tables fit in memory
+MAX_UNZIPPED = 2_500_000_000   # opened size of an .xlsx (its XML is typically 5-10 times the file size)
+STYLE_CELLS = 200_000          # exports above this many cells are streamed without per-cell formatting
+EXCEL_ROWS = 1_048_575
+RESULT_SHEET = re.compile(r"Result \d+ ")  # written by project_workbook; skipped on import
 COMMON_LABELS = {"id": "Reference", "name": "Name", "source_id": "Source reference", "note": "Notes", "url": "Source URL", "title": "Source title"}
 
 
@@ -67,7 +73,7 @@ def _frame(rows, title):
 def load_tables(files):
     """files is [(filename, bytes)]; no file contents enter a shared cache."""
     if not files or sum(len(raw) for _, raw in files) > MAX_BYTES:
-        raise io.DataProblem("Choose Excel (.xlsx) or UTF-8 CSV files totalling no more than 5 MB.")
+        raise io.DataProblem(f"Choose Excel (.xlsx) or UTF-8 CSV files totalling no more than {MAX_BYTES // 1_000_000:,} MB.")
     tables = {}
     cell_count = 0
     for filename, raw in files:
@@ -89,32 +95,51 @@ def load_tables(files):
                 parsed[Path(filename).stem] = _frame(rows, filename)
             elif suffix == ".xlsx":
                 with ZipFile(BytesIO(raw)) as archive:
-                    if sum(f.file_size for f in archive.infolist()) > 25_000_000 or len(archive.infolist()) > 1000:
+                    if sum(f.file_size for f in archive.infolist()) > MAX_UNZIPPED or len(archive.infolist()) > 1000:
                         raise io.DataProblem("This workbook is too large when opened. Keep only the sheets and rows you need.")
                 formulas = load_workbook(BytesIO(raw), read_only=True, data_only=False, keep_links=False)
                 cached = None
                 try:
                     if len(formulas.worksheets) > 30:
                         raise io.DataProblem("Keep at most 30 sheets in the workbook.")
-                    cached = load_workbook(BytesIO(raw), read_only=True, data_only=True, keep_links=False)
                     for sheet in formulas.worksheets:
+                        if RESULT_SHEET.match(sheet.title):
+                            continue  # result sheets of an exported workbook are never model inputs
                         if sheet.max_row and sheet.max_row > MAX_ROWS + 1 or sheet.max_column and sheet.max_column > 80:
                             raise io.DataProblem(f"{sheet.title}: keep at most {MAX_ROWS:,} rows and 80 columns, including formatted cells.")
-                        rows = []
-                        for row, saved in zip(sheet.iter_rows(), cached[sheet.title].iter_rows()):
+                        rows, pending = [], []
+                        for r, row in enumerate(sheet.iter_rows()):
                             if len(rows) > MAX_ROWS:
                                 raise io.DataProblem("Too many workbook rows.")
                             values = []
-                            for cell, value in zip(row, saved):
-                                if cell.data_type == "f":
-                                    if value.value is None:
-                                        raise io.DataProblem(f"{sheet.title}, {cell.coordinate}: this formula has no saved result. Recalculate and save in Excel, or paste its values before uploading.")
-                                    values.append(value.value)
-                                elif cell.data_type == "e":
+                            for c, cell in enumerate(row):
+                                kind = cell.data_type
+                                if kind == "f":
+                                    pending.append((r, c, cell.coordinate))
+                                    values.append(None)
+                                elif kind == "e":
                                     raise io.DataProblem(f"{sheet.title}, {cell.coordinate}: fix the Excel error before importing.")
                                 else:
                                     values.append(cell.value)
                             rows.append(values)
+                        if pending:
+                            # Formulas use the result Excel saved with the file; the workbook is read a second time
+                            # (values only) just for sheets that contain formulas.
+                            if cached is None:
+                                cached = load_workbook(BytesIO(raw), read_only=True, data_only=True, keep_links=False)
+                            wanted = {(r, c): coordinate for r, c, coordinate in pending}
+                            last = max(r for r, _, _ in pending)
+                            for r, saved in enumerate(cached[sheet.title].iter_rows(max_row=last + 1, values_only=True)):
+                                for c, value in enumerate(saved):
+                                    coordinate = wanted.pop((r, c), None)
+                                    if coordinate is None:
+                                        continue
+                                    if value is None:
+                                        raise io.DataProblem(f"{sheet.title}, {coordinate}: this formula has no saved result. Recalculate and save in Excel, or paste its values before uploading.")
+                                    rows[r][c] = value
+                            if wanted:
+                                coordinate = next(iter(wanted.values()))
+                                raise io.DataProblem(f"{sheet.title}, {coordinate}: this formula has no saved result. Recalculate and save in Excel, or paste its values before uploading.")
                         parsed[sheet.title] = _frame(rows, sheet.title)
                 finally:
                     formulas.close()
@@ -131,7 +156,7 @@ def load_tables(files):
                 continue
             cell_count += (len(frame)+1) * len(frame.columns)
             if cell_count > MAX_CELLS:
-                raise io.DataProblem("The combined files contain too many cells. Remove unused sheets and columns.")
+                raise io.DataProblem(f"The combined files contain more than {MAX_CELLS:,} cells. Remove unused sheets and columns, or aggregate small areas.")
             title = name if name not in tables else f"{Path(filename).stem} / {name}"
             if title in tables:
                 raise io.DataProblem("Two files have the same sheet names. Rename a file or sheet to distinguish them.")
@@ -174,7 +199,24 @@ def number(value, comma=False, probability=False):
 
 
 def missing(value):
-    return value is None or isinstance(value, str) and not value.strip() or bool(pd.isna(value))
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, float):
+        return value != value
+    if isinstance(value, (bool, int, date)):
+        return False
+    return bool(pd.isna(value))
+
+
+CHOICES = {
+    "lane": {"evidence": ["physical / digital evidence", "physical evidence", "digital evidence"], "customer": ["customer actions", "customer action"], "frontstage": ["visible staff / technology", "visible staff", "front stage", "visible"], "backstage": ["backstage actions", "back stage"], "support": ["support processes", "support process"]},
+    "basis": {"observed": [], "assumed": [], "proposed": []},
+    "role": {"own": ["owned", "our site", "our store"], "competitor": ["competition", "rival"], "candidate": ["proposed", "new location"]},
+}
+_CHOICE_LOOKUP = {kind: {normalize(alias): canonical for canonical, aliases in options.items() for alias in [canonical] + aliases}
+                  for kind, options in CHOICES.items()}
 
 
 def cast(value, kind, comma=False):
@@ -188,16 +230,11 @@ def cast(value, kind, comma=False):
     if kind in {"number", "optional_number", "optional_probability"}:
         return number(value, comma, "probability" in kind)
     text = str(value).strip()
-    choices = {
-        "lane": {"evidence": ["physical / digital evidence", "physical evidence", "digital evidence"], "customer": ["customer actions", "customer action"], "frontstage": ["visible staff / technology", "visible staff", "front stage", "visible"], "backstage": ["backstage actions", "back stage"], "support": ["support processes", "support process"]},
-        "basis": {"observed": [], "assumed": [], "proposed": []},
-        "role": {"own": ["owned", "our site", "our store"], "competitor": ["competition", "rival"], "candidate": ["proposed", "new location"]},
-    }
-    if kind in choices:
-        for canonical, aliases in choices[kind].items():
-            if normalize(text) in {normalize(s) for s in [canonical]+aliases}:
-                return canonical
-        raise io.DataProblem("Use one of: " + ", ".join(choices[kind]) + ".")
+    if kind in CHOICES:
+        canonical = _CHOICE_LOOKUP[kind].get(normalize(text))
+        if canonical is None:
+            raise io.DataProblem("Use one of: " + ", ".join(CHOICES[kind]) + ".")
+        return canonical
     return text
 
 
@@ -205,17 +242,23 @@ def mapped_rows(frame, mapping, fields, comma=False, table="Table"):
     used = [c for c in mapping.values() if c is not None]
     if len(used) != len(set(used)):
         raise io.DataProblem(f"{table}: each source column can fill only one role. Check the column choices.")
-    rows = []
-    for index, source in enumerate(frame.to_dict("records"), 2):
-        row = {}
-        for field, (title, kind, _) in fields.items():
-            column = mapping.get(field)
+    columns = {}
+    for field, (title, kind, _) in fields.items():
+        column = mapping.get(field)
+        values = frame[column].tolist() if column else [None] * len(frame)
+        out = []
+        for index, value in enumerate(values, 1):
             try:
-                row[field] = cast(source.get(column) if column else None, kind, comma)
+                out.append(cast(value, kind, comma))
             except io.DataProblem as exc:
-                raise io.DataProblem(f"{table}, data row {index-1}, {title}: {exc}") from exc
-        rows.append(row)
-    return rows
+                raise io.DataProblem(f"{table}, data row {index}, {title}: {exc}") from exc
+        columns[field] = out
+    return _records(columns, len(frame))
+
+
+def _records(columns, count):
+    names = list(columns)
+    return [dict(zip(names, values)) for values in zip(*columns.values())] if names else [{} for _ in range(count)]
 
 
 def schema_rows(model, table, frame, mapping, comma=False):
@@ -224,13 +267,14 @@ def schema_rows(model, table, frame, mapping, comma=False):
     used = [v for v in mapping.values() if v]
     if len(used) != len(set(used)):
         raise io.DataProblem(f"{fmt.TABLE_NAMES[table]}: choose a different source column for each role.")
-    rows = []
-    for index, source in enumerate(frame.to_dict("records"), 1):
-        row = {}
-        for field, spec in specs.items():
-            actual = spec.get("anyOf", [spec])[0]
-            nullable = any(s.get("type") == "null" for s in spec.get("anyOf", []))
-            value = source.get(mapping.get(field))
+    columns = {}
+    for field, spec in specs.items():
+        actual = spec.get("anyOf", [spec])[0]
+        nullable = any(s.get("type") == "null" for s in spec.get("anyOf", []))
+        source = mapping.get(field)
+        values = frame[source].tolist() if source is not None and source in frame.columns else [None] * len(frame)
+        out = []
+        for index, value in enumerate(values, 1):
             try:
                 if missing(value):
                     if nullable:
@@ -254,11 +298,11 @@ def schema_rows(model, table, frame, mapping, comma=False):
                     value = matched
                 else:
                     value = str(value).strip()
-                row[field] = value
+                out.append(value)
             except io.DataProblem as exc:
                 raise io.DataProblem(f"{fmt.TABLE_NAMES[table]}, data row {index}, {label(field)}: {exc}") from exc
-        rows.append(row)
-    return rows
+        columns[field] = out
+    return _records(columns, len(frame))
 
 
 def complete_project(model, brief, tables):
@@ -272,9 +316,14 @@ def complete_project(model, brief, tables):
 
 
 def _workbook(tables, instructions):
+    data = {"Read me": pd.DataFrame({"Instructions": instructions}), **tables}
+    for title, frame in data.items():
+        if len(frame) > EXCEL_ROWS:
+            raise io.DataProblem(f"{title} has {len(frame):,} rows, more than one Excel sheet holds. Use the ZIP export.")
+    if sum(len(frame) * max(1, len(frame.columns)) for frame in data.values()) > STYLE_CELLS:
+        return _streamed_workbook(data)
     book = Workbook()
     book.remove(book.active)
-    data = {"Read me": pd.DataFrame({"Instructions": instructions}), **tables}
     for title, frame in data.items():
         safe_title = re.sub(r"[\\/*?:\[\]]", " ", title)[:31]
         sheet = book.create_sheet(safe_title)
@@ -292,6 +341,36 @@ def _workbook(tables, instructions):
         for i, column in enumerate(frame.columns, 1):
             values = [str(column)] + [str(v) for v in frame[column].head(30) if v is not None]
             sheet.column_dimensions[get_column_letter(i)].width = min(60, max(18, max(map(len, values), default=18)+2))
+    output = BytesIO()
+    book.save(output)
+    return output.getvalue()
+
+
+def _streamed_workbook(data):
+    """Large exports: openpyxl's write-only mode keeps memory flat. Headers keep their style; text that Excel would
+    read as a formula or an error code is still stored as literal text."""
+    book = Workbook(write_only=True)
+    fill, font = PatternFill("solid", fgColor="343229"), Font(color="FFFFFF", bold=True)
+
+    def text(sheet, value):
+        cell = WriteOnlyCell(sheet, value=value)
+        cell.data_type = "s"
+        return cell
+
+    for title, frame in data.items():
+        sheet = book.create_sheet(re.sub(r"[\\/*?:\[\]]", " ", title)[:31])
+        for i, column in enumerate(frame.columns, 1):
+            values = [str(column)] + [str(v) for v in frame[column].head(30) if v is not None]
+            sheet.column_dimensions[get_column_letter(i)].width = min(60, max(18, max(map(len, values), default=18)+2))
+        sheet.freeze_panes = "A2"
+        header = []
+        for column in frame.columns:
+            cell = text(sheet, str(column))
+            cell.fill, cell.font = fill, font
+            header.append(cell)
+        sheet.append(header)
+        for row in frame.astype(object).where(pd.notna(frame), None).itertuples(index=False, name=None):
+            sheet.append([text(sheet, v) if isinstance(v, str) and (v.startswith("=") or v in ERROR_CODES) else v for v in row])
     output = BytesIO()
     book.save(output)
     return output.getvalue()

@@ -6,14 +6,40 @@ build-backend = "setuptools.build_meta"
 name = "reachsignal"
 version = "0.1.0"
 description = "Reach Signal: location access and transparent Huff catchment scenarios"
+readme = "README.md"
 requires-python = ">=3.10"
 license = "AGPL-3.0-or-later"
 authors = [{name = "Ulrik Erlingsen"}]
+keywords = [
+  "location analytics",
+  "huff model",
+  "catchment area",
+  "trade area",
+  "site selection",
+  "retail geography",
+  "marketing analytics",
+  "streamlit",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: GIS",
+  "Topic :: Scientific/Engineering :: Information Analysis",
+]
 dependencies = ["pandas>=2.0,<3", "numpy>=1.24,<3", "jsonschema>=4.21,<5", "openpyxl>=3.1.5,<4"]
 
 [project.optional-dependencies]
-ui = ["streamlit>=1.50,<2", "plotly>=5.18,<8"]
-test = ["pytest>=8,<10", "ruff>=0.8,<1", "streamlit>=1.50,<2", "plotly>=5.18,<8"]
+ui = ["streamlit>=1.51,<2", "plotly>=5.18,<8"]
+test = ["pytest>=8,<10", "ruff>=0.8,<1", "build>=1.2,<2", "streamlit>=1.51,<2", "plotly>=5.18,<8"]
+
+[project.urls]
+Homepage = "https://github.com/UlrikErlingsen/location-catchment-analysis"
+Source = "https://github.com/UlrikErlingsen/location-catchment-analysis"
+Issues = "https://github.com/UlrikErlingsen/location-catchment-analysis/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]

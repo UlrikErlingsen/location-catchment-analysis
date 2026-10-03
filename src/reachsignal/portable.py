@@ -13,6 +13,9 @@ from zipfile import ZipFile, ZIP_DEFLATED
 
 import pandas as pd
 from jsonschema import Draft202012Validator, FormatChecker
+import numpy as np
+
+MAX_JSON_BYTES = 1_000_000_000  # same 1,000 MB ceiling as spreadsheet uploads
 
 
 class DataProblem(ValueError):
@@ -56,8 +59,8 @@ def finite(value):
 def parse(payload):
     try:
         value = payload.decode("utf-8-sig") if isinstance(payload, bytes) else payload
-        if len(value.encode("utf-8")) > 5_000_000:
-            raise DataProblem("Keep the JSON file below 5 MB.")
+        if len(value.encode("utf-8")) > MAX_JSON_BYTES:
+            raise DataProblem(f"Keep the JSON file below {MAX_JSON_BYTES // 1_000_000:,} MB.")
         value = value.strip().lstrip("\ufeff")
         match = re.fullmatch(r"```(?:json)?\s*\n(.*?)\n```", value, re.S | re.I)
         if match:
@@ -111,6 +114,83 @@ def validate_schema(data, schema):
         if source["url"] is not None and not safe_url(source["url"]):
             raise DataProblem(f"Source {source['id']}: use a public HTTP(S) link or null for supplied/internal material.")
     return deepcopy(data)
+
+
+_NONE = type(None)
+
+
+def validate_rows(rows, item, table):
+    """Check a list of flat records against an obj() item schema, one column at a time.
+
+    Gives the same verdict as validating each record with jsonschema for the field types used here (numbers with
+    bounds, strings with length and pattern, enums, nullable variants) but stays fast for hundreds of thousands of
+    rows. Returns shallow copies of the records (their values are immutable scalars).
+    """
+    if not isinstance(rows, list):
+        raise DataProblem(f"{table}: expected a list of records.")
+    fields = item["properties"]
+    for i, row in enumerate(rows):
+        if type(row) is not dict or row.keys() != fields.keys():
+            got = sorted(row) if isinstance(row, dict) else type(row).__name__
+            raise DataProblem(f"{table} / {i}: each record needs exactly these fields: {', '.join(fields)} (got {got}).")
+    for field, spec in fields.items():
+        _check_column([r[field] for r in rows], spec, f"{table} / {{}} / {field}")
+    return [dict(r) for r in rows]
+
+
+def _first(values, bad):
+    return next(i for i, flag in enumerate(bad) if flag)
+
+
+def _check_column(values, spec, where):
+    options = spec.get("anyOf", [spec])
+    nullable = any(o.get("type") == "null" for o in options)
+    actual = next(o for o in options if o.get("type") != "null")
+    kind = actual.get("type")
+    allowed = {"number": {int, float}, "integer": {int}, "string": {str}}.get(kind)
+    if allowed is None and "enum" not in actual:
+        raise TypeError(f"Unsupported column schema: {actual}")
+    if allowed is not None:
+        allowed = allowed | ({_NONE} if nullable else set())
+        if not set(map(type, values)) <= allowed:
+            i = _first(values, [type(v) not in allowed for v in values])
+            raise DataProblem(where.format(i) + f": {values[i]!r} is not a {kind}" + (" or null." if nullable else "."))
+    present = [v is not None for v in values]
+    if kind in {"number", "integer"}:
+        try:
+            arr = np.array([np.nan if v is None else v for v in values], dtype=float)
+        except OverflowError as exc:
+            raise DataProblem(where.format("?") + ": a number is too large.") from exc
+        mask = np.array(present, dtype=bool)
+        if (mask & ~np.isfinite(arr)).any():
+            raise DataProblem("Use finite numbers. Missing values must be null, not NaN or infinity.")
+        for bound, test, word in [("minimum", np.less, "less than"), ("maximum", np.greater, "greater than")]:
+            if bound in actual:
+                bad = mask & test(arr, actual[bound], where=mask, out=np.zeros(len(arr), dtype=bool))
+                if bad.any():
+                    i = int(np.argmax(bad))
+                    raise DataProblem(where.format(i) + f": {values[i]} is {word} the {bound} of {actual[bound]}.")
+        return
+    if "enum" in actual:
+        choices = set(actual["enum"])
+        bad = [(v is not None or not nullable) and (not isinstance(v, str) or v not in choices) for v in values]
+        if any(bad):
+            i = _first(values, bad)
+            raise DataProblem(where.format(i) + f": {values[i]!r} is not one of {actual['enum']}.")
+        return
+    limit = actual.get("maxLength")
+    if limit is not None and any(v is not None and len(v) > limit for v in values):
+        i = _first(values, [v is not None and len(v) > limit for v in values])
+        raise DataProblem(where.format(i) + f": text is longer than {limit} characters.")
+    if actual.get("minLength") and any(v is not None and len(v) < actual["minLength"] for v in values):
+        i = _first(values, [v is not None and len(v) < actual["minLength"] for v in values])
+        raise DataProblem(where.format(i) + ": text must not be empty.")
+    if "pattern" in actual:
+        search = re.compile(actual["pattern"]).search
+        bad = [v is not None and search(v) is None for v in values]
+        if any(bad):
+            i = _first(values, bad)
+            raise DataProblem(where.format(i) + f": {values[i]!r} does not match {actual['pattern']!r}.")
 
 
 def unique(rows, field="id"):
@@ -167,7 +247,9 @@ def csv_bytes(frame):
         if isinstance(value, str) and value.lstrip().startswith(("=", "+", "-", "@")):
             return "'" + value
         return value
-    return frame.apply(lambda col: col.map(safe)).to_csv(index=False).encode("utf-8-sig")
+    # Only text can be read as a formula; numeric and boolean columns are written unchanged.
+    frame = frame.apply(lambda col: col.map(safe) if col.dtype == object else col)
+    return frame.to_csv(index=False).encode("utf-8-sig")
 
 
 def report(title, p, sections, references, limits):
